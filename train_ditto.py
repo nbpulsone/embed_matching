@@ -32,8 +32,28 @@ if __name__=="__main__":
     parser.add_argument("--dk", type=str, default=None)
     parser.add_argument("--summarize", dest="summarize", action="store_true")
     parser.add_argument("--size", type=int, default=None)
+    parser.add_argument("--contrastive_margin", type=float, default=0.3)
+    parser.add_argument("--loss", choices=["contrastive", "infonce"], default="contrastive")
+    parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument("--lm_left", type=str, default=None)
+    parser.add_argument("--lm_right", type=str, default=None)
+    parser.add_argument("--projection_dim", type=int, default=256)
+    parser.add_argument("--zero_shot", action="store_true")
+    parser.add_argument("--zero_shot_threshold", type=float, default=0.5)
+    parser.add_argument("--bert_pooling", dest="bert_pooling", action="store_true")
 
     hp = parser.parse_args()
+
+    # determine whether heterogenous encoders are used for left and right entities
+    hp.lm_left = hp.lm_left or hp.lm
+    hp.lm_right = hp.lm_right or hp.lm
+    hp.heterogeneous = hp.lm_left != hp.lm_right
+
+    if hp.da is not None:
+        raise ValueError(
+            "MixDA is not yet supported for late-fusion training. "
+            "Use --da None (default)."
+        )
 
     if hp.fp16 and hp.bf16:
         raise ValueError("Use either --fp16 or --bf16, not both.")
@@ -56,6 +76,14 @@ if __name__=="__main__":
     run_tag = '%s_lm=%s_da=%s_dk=%s_su=%s_size=%s_id=%d' % (task, hp.lm, hp.da,
             hp.dk, hp.summarize, str(hp.size), hp.run_id)
     run_tag = run_tag.replace('/', '_')
+    run_tag += (
+        f"_left={hp.lm_left.replace('/', '_')}"
+        f"_right={hp.lm_right.replace('/', '_')}"
+        f"_loss={hp.loss}"
+        f"_proj={hp.projection_dim}"
+    )
+    if hp.zero_shot:
+        run_tag += "_zeroshot"
 
     # load task configuration
     configs = json.load(open('configs.json'))
@@ -85,17 +113,22 @@ if __name__=="__main__":
 
     # load train/dev/test sets
     train_dataset = DittoDataset(trainset,
-                                   lm=hp.lm,
-                                   max_len=hp.max_len,
-                                   size=hp.size,
-                                   da=hp.da)
-    valid_dataset = DittoDataset(validset, lm=hp.lm, max_len=hp.max_len)
-    test_dataset = DittoDataset(testset, lm=hp.lm, max_len=hp.max_len)
+                                 lm_left=hp.lm_left,
+                                 lm_right=hp.lm_right,
+                                 lm=hp.lm,
+                                 max_len=hp.max_len,
+                                 size=hp.size,
+                                 da=hp.da)
+    valid_dataset = DittoDataset(validset, lm_left=hp.lm_left, lm_right=hp.lm_right, lm=hp.lm, max_len=hp.max_len)
+    test_dataset = DittoDataset(testset, lm_left=hp.lm_left, lm_right=hp.lm_right, lm=hp.lm, max_len=hp.max_len)
 
     # train and evaluate the model
     best_test_f1, best_val_f1 = train(train_dataset, valid_dataset, test_dataset, run_tag, hp)
 
-    print(f"~~~~ FINAL F1 RESULTS ~~~~")
+    print(
+    f"~~~~ FINAL F1 RESULTS "
+    f"(loss={hp.loss}, "
+    f"parameter={hp.temperature if hp.loss == 'infonce' else hp.contrastive_margin}) ~~~~")
     print(f"val f1 = {best_val_f1}")
     print(f"test f1 = {best_test_f1}")
-    print("~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")

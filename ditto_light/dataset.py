@@ -22,13 +22,19 @@ def get_tokenizer(lm):
 class DittoDataset(data.Dataset):
     """EM dataset"""
 
-    def __init__(self,
-                 path,
-                 max_len=256,
-                 size=None,
-                 lm='roberta',
-                 da=None):
-        self.tokenizer = get_tokenizer(lm)
+    def __init__(self, path, max_len=256, size=None, lm='roberta', da=None, lm_left=None, lm_right=None):
+        lm_left = lm_left or lm
+        lm_right = lm_right or lm
+
+        self.tokenizer_left = get_tokenizer(lm_left)
+
+        if lm_left == lm_right:
+            self.tokenizer_right = self.tokenizer_left
+        else:
+            self.tokenizer_right = get_tokenizer(lm_right)
+
+        #self.tokenizer = get_tokenizer(lm)
+        self.tokenizer = self.tokenizer_left
         self.pairs = []
         self.labels = []
         self.max_len = max_len
@@ -71,51 +77,35 @@ class DittoDataset(data.Dataset):
         left = self.pairs[idx][0]
         right = self.pairs[idx][1]
 
-        # left + right
-        x = self.tokenizer.encode(text=left,
-                                  text_pair=right,
-                                  max_length=self.max_len,
-                                  truncation=True)
+        # encode left and right entities independently with their respective encoders
+        x_left = self.tokenizer_left.encode(left, max_length=self.max_len, truncation=True)
+        x_right = self.tokenizer_right.encode(right, max_length=self.max_len, truncation=True)
 
-        # augment if da is set
-        if self.da is not None:
-            combined = self.augmenter.augment_sent(left + ' [SEP] ' + right, self.da)
-            left, right = combined.split(' [SEP] ')
-            x_aug = self.tokenizer.encode(text=left,
-                                      text_pair=right,
-                                      max_length=self.max_len,
-                                      truncation=True)
-            return x, x_aug, self.labels[idx]
-        else:
-            return x, self.labels[idx]
+        return x_left, x_right, self.labels[idx]
 
 
     def pad(self, batch):
-        """Merge a list of dataset items into a train/test batch
-        Args:
-            batch (list of tuple): a list of dataset items
+        x_left, x_right, y = zip(*batch)
 
-        Returns:
-            LongTensor: x1 of shape (batch_size, seq_len)
-            LongTensor: x2 of shape (batch_size, seq_len).
-                        Elements of x1 and x2 are padded to the same length
-            LongTensor: a batch of labels, (batch_size,)
-        """
-        pad_id = self.tokenizer.pad_token_id
+        pad_left = self.tokenizer_left.pad_token_id
+        pad_right = self.tokenizer_right.pad_token_id
 
-        if len(batch[0]) == 3:
-            x1, x2, y = zip(*batch)
+        # Pad each encoder's inputs independently
+        maxlen_left = max(len(x) for x in x_left)
+        maxlen_right = max(len(x) for x in x_right)
 
-            maxlen = max([len(x) for x in x1+x2])
-            x1 = [xi + [pad_id]*(maxlen - len(xi)) for xi in x1]
-            x2 = [xi + [pad_id]*(maxlen - len(xi)) for xi in x2]
-            return torch.LongTensor(x1), \
-                   torch.LongTensor(x2), \
-                   torch.LongTensor(y)
-        else:
-            x12, y = zip(*batch)
-            maxlen = max([len(x) for x in x12])
-            x12 = [xi + [pad_id]*(maxlen - len(xi)) for xi in x12]
-            return torch.LongTensor(x12), \
-                   torch.LongTensor(y)
+        x_left = [
+            x + [pad_left] * (maxlen_left - len(x))
+            for x in x_left
+        ]
 
+        x_right = [
+            x + [pad_right] * (maxlen_right - len(x))
+            for x in x_right
+        ]
+
+        return (
+            torch.LongTensor(x_left),
+            torch.LongTensor(x_right),
+            torch.LongTensor(y)
+        )
